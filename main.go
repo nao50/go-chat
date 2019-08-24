@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -13,41 +14,65 @@ import (
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
 )
 
 var addr = flag.String("addr", ":8080", "http service address")
 
 type roomJSON struct {
-	Name        string `json:"name"`
+	RoomName    string `json:"roomName"`
 	Discription string `json:"discription"`
 }
 
-var Hubs = map[string]*Hub{}
+var Hubs = []*Hub{}
 
 func createRoom(w http.ResponseWriter, r *http.Request) {
 	body := r.Body
 	defer body.Close()
-
 	buf := new(bytes.Buffer)
 	io.Copy(buf, body)
 	var roomJson roomJSON
 	json.Unmarshal(buf.Bytes(), &roomJson)
 
-	hub := newHub(roomJson.Name, roomJson.Discription)
-	go hub.run()
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return
+	}
 
-	Hubs[roomJson.Name] = hub
+	go func() {
+		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(ctx, time.Second*200)
+		defer cancel()
 
-	log.Printf("Hubs: %+v\n", Hubs)
-	log.Printf("hub: %+v\n", hub)
+		hub := newHub(id.String(), roomJson.RoomName, roomJson.Discription)
+		go hub.run(ctx)
+
+		Hubs = append(Hubs, hub)
+
+		select {
+		case <-ctx.Done():
+			fmt.Println("done1:", ctx.Err())
+			for i, v := range Hubs {
+				if v.RoomID == id.String() {
+					Hubs = append(Hubs[:i], Hubs[i+1:]...)
+				}
+			}
+		}
+	}()
 }
 
 func getRooms(w http.ResponseWriter, r *http.Request) {
-	if len(Hubs) > 0 {
-		respondJSON(w, http.StatusOK, keys(Hubs))
-	} else {
-		respondJSON(w, http.StatusOK, "No chat room exist")
+	respondJSON(w, http.StatusOK, Hubs)
+}
+
+func getSessionID(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
+
+	respondJSON(w, http.StatusOK, id)
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -64,23 +89,43 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func AllowOriginFunc(r *http.Request, origin string) bool {
-	// if origin == "http://localhost:4200" || origin == "https://fir-angular-showcase.web.app" {
-	// 	return true
-	// }
-	// return false
-	return true
+	if origin == "http://localhost:4200" || origin == "https://fir-angular-showcase.web.app" {
+		return true
+	}
+	return false
 }
 
 func RoomCtx(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		roomID := chi.URLParam(r, "roomID")
 
-		if value, ok := Hubs[roomID]; !ok {
+		for _, v := range Hubs {
+			if v.RoomID == roomID {
+				ctx := context.WithValue(r.Context(), "roomID", v)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+		http.Error(w, http.StatusText(404), 404)
+		return
+	})
+}
+
+func UserCtx(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userIDValues := r.URL.Query()
+		if len(userIDValues["userID"]) > 0 {
+			userID := userIDValues["userID"][0]
+			if len(userID) > 0 {
+				ctx := context.WithValue(r.Context(), "userID", userID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+			} else {
+				http.Error(w, http.StatusText(400), 400)
+				return
+			}
+		} else {
 			http.Error(w, http.StatusText(404), 404)
 			return
-		} else {
-			ctx := context.WithValue(r.Context(), "hub", value)
-			next.ServeHTTP(w, r.WithContext(ctx))
 		}
 	})
 }
@@ -95,14 +140,6 @@ func respondJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	w.Write([]byte(response))
-}
-
-func keys(m map[string]*Hub) []string {
-	ks := []string{}
-	for k, _ := range m {
-		ks = append(ks, k)
-	}
-	return ks
 }
 
 func main() {
@@ -131,25 +168,27 @@ func main() {
 	r.Get("/", serveHome)
 	r.Post("/createroom", createRoom)
 
-	r.Get("/getRooms", getRooms)
+	r.Get("/rooms", getRooms)
+	r.Get("/sessionid", getSessionID)
 
 	r.Route("/ws", func(r chi.Router) {
 		r.Route("/{roomID}", func(r chi.Router) {
 			r.Use(RoomCtx)
+			r.Use(UserCtx)
 			r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 				ctx := r.Context()
-				hub, ok := ctx.Value("hub").(*Hub)
+				hub, ok := ctx.Value("roomID").(*Hub)
 				if !ok {
 					http.Error(w, http.StatusText(422), 422)
 					return
 				}
-				serveWs(hub, w, r)
+				user := ctx.Value("userID").(string)
+				serveWs(hub, user, w, r)
 			})
 		})
 	})
 
 	err := http.ListenAndServe(*addr, r)
-
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}

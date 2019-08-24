@@ -12,13 +12,10 @@ import (
 const (
 	// Time allowed to write a message to the peer.
 	writeWait = 10 * time.Second
-
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 60 * time.Second
-
 	// Send pings to peer with this period. Must be less than pongWait.
 	pingPeriod = (pongWait * 9) / 10
-
 	// Maximum message size allowed from peer.
 	maxMessageSize = 512
 )
@@ -38,13 +35,15 @@ var upgrader = websocket.Upgrader{
 
 // Client is a middleman between the websocket connection and the hub.
 type Client struct {
-	hub *Hub
+	hub *Hub `json:"hub"`
 
 	// The websocket connection.
-	conn *websocket.Conn
+	conn *websocket.Conn `json:"conn"`
 
 	// Buffered channel of outbound messages.
-	send chan []byte
+	send chan []byte `json:"send"`
+
+	UserId string `json:"userId"`
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -120,13 +119,14 @@ func (c *Client) writePump() {
 }
 
 // serveWs handles websocket requests from the peer.
-func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+func serveWs(hub *Hub, user string, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
+
+	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256), UserId: user}
 	client.hub.register <- client
 
 	// Allow collection of memory referenced by the caller by doing all work in

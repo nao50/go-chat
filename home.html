@@ -27,7 +27,6 @@ window.onload = function () {
     };
     if (window["WebSocket"]) {
         conn = new WebSocket("ws://" + document.location.host + "/ws/aaa");
-        // conn = new WebSocket("ws://" + document.location.host);
         console.log(document.location.host);
         conn.onclose = function (evt) {
             var item = document.createElement("div");

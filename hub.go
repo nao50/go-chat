@@ -1,64 +1,62 @@
 package main
 
 import (
-	"log"
+	"context"
 	"time"
 )
 
 type Message struct {
-	data []byte
-	room string
+	UserId string `json:"userId"`
+	Time   int64  `json:"time"`
+	RoomID string `json:"roomID"`
+	Data   []byte `json:"data"`
 }
 
-// Hub maintains the set of active clients and broadcasts messages to the
-// clients.
 type Hub struct {
-	roomID      string
-	discription string
-	time        int64
+	RoomID       string          `json:"roomID"`
+	RoomName     string          `json:"roomName"`
+	Discription  string          `json:"discription"`
+	Time         int64           `json:"time"`
+	Existclients map[string]bool `json:"existclients"`
+	Messages     []Message       `json:"message"`
 
 	// Registered clients.
-	clients map[*Client]bool
-
+	clients map[*Client]bool `json:"clients"`
 	// Inbound messages from the clients.
-	broadcast chan []byte
-
+	broadcast chan []byte `json:"broadcast"`
 	// Register requests from the clients.
-	register chan *Client
-
+	register chan *Client `json:"register"`
 	// Unregister requests from clients.
-	unregister chan *Client
+	unregister chan *Client `json:"unregister"`
 }
 
-func newHub(roomID, discription string) *Hub {
-	// func newHub() *Hub {
+func newHub(roomID, roomName, discription string) *Hub {
 	return &Hub{
-		roomID:      roomID,
-		discription: discription,
-		time:        time.Now().Unix(),
-		broadcast:   make(chan []byte),
-		register:    make(chan *Client),
-		unregister:  make(chan *Client),
-		clients:     make(map[*Client]bool),
+		RoomID:       roomID,
+		RoomName:     roomName,
+		Discription:  discription,
+		Time:         time.Now().UnixNano() / int64(time.Millisecond),
+		Existclients: make(map[string]bool),
+		Messages:     []Message{},
+		clients:      make(map[*Client]bool),
+		broadcast:    make(chan []byte),
+		register:     make(chan *Client),
+		unregister:   make(chan *Client),
 	}
 }
 
-func (h *Hub) run() {
+func (h *Hub) run(ctx context.Context) {
+	hubCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	for {
 		select {
 		case client := <-h.register:
 			h.clients[client] = true
-
-			// connections := h.rooms[client.room]
-			// if connections == nil {
-			// 	connections = make(map[*Client]bool)
-			// 	h.rooms[client.room] = connections
-			// }
-			// connections[client.conn] = true
-
+			h.Existclients[client.UserId] = true
 		case client := <-h.unregister:
-			log.Println("unregister")
 			if _, ok := h.clients[client]; ok {
+				h.Existclients[client.UserId] = false
 				delete(h.clients, client)
 				close(client.send)
 			}
@@ -66,11 +64,25 @@ func (h *Hub) run() {
 			for client := range h.clients {
 				select {
 				case client.send <- message:
+					var m Message = Message{
+						UserId: client.UserId,
+						Time:   time.Now().UnixNano() / int64(time.Millisecond),
+						RoomID: h.RoomID,
+						Data:   message,
+					}
+					h.Messages = append(h.Messages, m)
 				default:
 					close(client.send)
 					delete(h.clients, client)
 				}
 			}
+		case <-hubCtx.Done():
+			for client := range h.clients {
+				h.Existclients[client.UserId] = false
+				delete(h.clients, client)
+				close(client.send)
+			}
+			return
 		}
 	}
 }
